@@ -445,6 +445,7 @@ function startGeneration() {
   firstTranscriptReceived = false;
   generateBtn.disabled = true;
   generateBtn.textContent = 'Генерация...';
+  renderTranscript();
 
   if (streamSocket) {
     streamSocket.close();

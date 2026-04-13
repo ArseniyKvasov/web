@@ -10,8 +10,6 @@ let isGenerating = false;
 let summaryReady = false;
 let quizReady = false;
 let isEditMode = false;
-let uploadProgress = 0;
-let uploadInProgress = false;
 let firstTranscriptReceived = false;
 
 let currentQuizIndex = 0;
@@ -123,8 +121,7 @@ function formatTime(ms) {
 
 function renderTranscript() {
   if (isGenerating && !firstTranscriptReceived) {
-    const width = Math.max(0, Math.min(100, Math.round(uploadProgress * 100)));
-    transcriptContainer.innerHTML = `<div class="upload-progress-wrap"><div class="upload-progress-label">Загрузка файла</div><div class="upload-progress-track"><div class="upload-progress-fill" style="width:${width}%"></div></div></div>`;
+    transcriptContainer.innerHTML = `<div class="status-message"><span class="spinner-small"></span> Распознавание...</div>`;
     return;
   }
 
@@ -264,7 +261,6 @@ function updateGenerateButtonIdle() {
 
 function setFailedState(message) {
   isGenerating = false;
-  uploadInProgress = false;
   updateGenerateButtonIdle();
   if (message) {
     const html = `<div class="status-message">Ошибка: ${escapeHtml(message)}</div>`;
@@ -381,27 +377,15 @@ async function uploadFile(file) {
 async function sendFileToStream(ws, file) {
   const buffer = await file.arrayBuffer();
   const data = new Uint8Array(buffer);
-  const totalSize = data.length || 1;
-  let sentSize = 0;
 
   for (let offset = 0; offset < data.length; offset += CHUNK_SIZE) {
     const chunk = data.slice(offset, Math.min(offset + CHUNK_SIZE, data.length));
     ws.send(chunk);
-    sentSize += chunk.length;
-    uploadProgress = sentSize / totalSize;
-    if (!firstTranscriptReceived) {
-      renderTranscript();
-    }
     if ((offset / CHUNK_SIZE) % 20 === 0) {
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
   }
 
-  uploadInProgress = false;
-  uploadProgress = 1;
-  if (!firstTranscriptReceived) {
-    renderTranscript();
-  }
   ws.send(JSON.stringify({ type: 'end' }));
 }
 
@@ -425,8 +409,6 @@ function resetContentState() {
   currentQuizIndex = 0;
   quizAnswers = [];
   isEditMode = false;
-  uploadProgress = 0;
-  uploadInProgress = false;
   firstTranscriptReceived = false;
 
   summaryReady = false;
@@ -460,8 +442,6 @@ function startGeneration() {
   setTabLoader(quizTabBtn, true);
 
   isGenerating = true;
-  uploadInProgress = true;
-  uploadProgress = 0;
   firstTranscriptReceived = false;
   generateBtn.disabled = true;
   generateBtn.textContent = 'Генерация...';
@@ -506,7 +486,6 @@ function startGeneration() {
   streamSocket.onclose = () => {
     streamSocket = null;
     isGenerating = false;
-    uploadInProgress = false;
     updateGenerateButtonIdle();
   };
 }

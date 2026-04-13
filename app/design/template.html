@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+    <title>Адаптивное образование</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.10/dist/katex.min.css">
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.10/dist/katex.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.10/dist/contrib/auto-render.min.js"></script>
+</head>
+<body>
+<div class="container">
+    <div class="card">
+        <div class="card-header">
+            <span class="title">Загрузка аудио</span>
+        </div>
+        <div class="sub">Перетащите файл или нажмите на область</div>
+
+        <div id="dropZone" class="upload-area">
+            <div class="upload-icon">📁</div>
+            <div class="upload-text">Выберите или перетащите аудиофайл</div>
+            <div style="font-size: 12px; margin-top: 6px;">MP3, WAV, M4A - до 50 МБ</div>
+            <input type="file" id="fileInput" accept="audio/*" style="display: none;" />
+        </div>
+
+        <div id="uploadStatus" style="min-height: 48px;"></div>
+
+        <button id="generateBtn" class="btn" disabled>Сгенерировать задания</button>
+
+        <div class="action-group">
+            <div id="resetUploadBtn" class="action-outline">Загрузить другой файл</div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="title" style="margin-bottom: 12px;">Расшифровка и контент</div>
+
+        <div class="tabs-wrapper">
+            <div class="tabs-row">
+                <button class="tab-btn active" data-tab="transcript">📝 Транскрипт</button>
+                <button class="tab-btn" data-tab="summary" id="summaryTabBtn" disabled style="opacity: 0.5;">
+                    <span class="tab-text">📖 Конспект</span>
+                    <span class="tab-loader" style="display: none;"></span>
+                </button>
+                <button class="tab-btn" data-tab="quiz" id="quizTabBtn" disabled style="opacity: 0.5;">
+                    <span class="tab-text">❓ Тест</span>
+                    <span class="tab-loader" style="display: none;"></span>
+                </button>
+            </div>
+        </div>
+
+        <div id="panelTranscript" class="content-pane active-pane">
+            <div id="transcriptContainer">
+                <div class="status-message">Нажмите «Сгенерировать задания», чтобы начать расшифровку</div>
+            </div>
+        </div>
+
+        <div id="panelSummary" class="content-pane">
+            <div class="edit-control">
+                <button id="editSummaryBtn" class="edit-btn">✏️ Редактировать конспект</button>
+            </div>
+            <div id="summaryContainer">
+                <div class="status-message">Конспект появится после генерации</div>
+            </div>
+        </div>
+
+        <div id="panelQuiz" class="content-pane">
+            <div id="quizContainer">
+                <div class="status-message">Тест появится после генерации конспекта</div>
+            </div>
+        </div>
+    </div>
+</div>
+</body>
+</html>

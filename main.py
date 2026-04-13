@@ -284,7 +284,7 @@ async def generate_summary(transcript: list[dict[str, Any]]) -> tuple[list[dict[
         return None, str(exc)
 
 
-async def generate_test(transcript: list[dict[str, Any]]) -> tuple[list[dict[str, Any]] | None, str | None]:
+async def generate_test(summary: list[dict[str, Any]]) -> tuple[list[dict[str, Any]] | None, str | None]:
     try:
         started_at = asyncio.get_running_loop().time()
 
@@ -298,10 +298,13 @@ async def generate_test(transcript: list[dict[str, Any]]) -> tuple[list[dict[str
             if not health_resp.json().get("llm_available"):
                 return None, "Test generation unavailable"
 
+            if not summary:
+                return None, "Test generation unavailable"
+
             payload = {
-                "transcript": [
-                    {"start_ms": item.get("start_ms", 0), "text": item.get("text", "")}
-                    for item in transcript
+                "summary": [
+                    {"subtopic": item.get("subtopic", ""), "content": item.get("content", "")}
+                    for item in summary
                 ],
                 "num_questions": 10,
             }
@@ -345,41 +348,42 @@ async def generate_test(transcript: list[dict[str, Any]]) -> tuple[list[dict[str
 
 
 async def run_postprocessing(task_id: str, transcript: list[dict[str, Any]]) -> None:
-    pending: dict[asyncio.Task[tuple[list[dict[str, Any]] | None, str | None]], str] = {
-        asyncio.create_task(generate_summary(transcript)): "summary",
-        asyncio.create_task(generate_test(transcript)): "test",
-    }
-
-    while pending:
-        done, _ = await asyncio.wait(set(pending.keys()), return_when=asyncio.FIRST_COMPLETED)
-        for completed in done:
-            section = pending.pop(completed)
-            data, err = await completed
-
-            async with TASK_LOCK:
-                if task_id not in TASKS:
-                    return
-                task = TASKS[task_id]
-                task.setdefault("errors", {})
-                if data is not None:
-                    task[section] = data
-                task["errors"][section] = err
-
-            await push_task_update(task_id)
-
+    summary_data, summary_error = await generate_summary(transcript)
     async with TASK_LOCK:
         if task_id not in TASKS:
             return
         task = TASKS[task_id]
-        errors = task.get("errors", {})
-        final_errors = [errors.get("summary"), errors.get("test")]
-        if any(final_errors):
+        task.setdefault("errors", {})
+        if summary_data is not None:
+            task["summary"] = summary_data
+        task["errors"]["summary"] = summary_error
+    await push_task_update(task_id)
+
+    if summary_error or not summary_data:
+        async with TASK_LOCK:
+            if task_id not in TASKS:
+                return
+            task = TASKS[task_id]
+            task["errors"]["test"] = "Тест не сгенерирован: нет конспекта"
             task["status"] = "failed"
-            task["error"] = next((item for item in final_errors if item), "Generation failed")
+            task["error"] = summary_error or "Summary generation failed"
+        await push_task_update(task_id)
+        return
+
+    test_data, test_error = await generate_test(summary_data)
+    async with TASK_LOCK:
+        if task_id not in TASKS:
+            return
+        task = TASKS[task_id]
+        if test_data is not None:
+            task["test"] = test_data
+        task["errors"]["test"] = test_error
+        if test_error:
+            task["status"] = "failed"
+            task["error"] = test_error
         else:
             task["status"] = "done"
             task["error"] = None
-
     await push_task_update(task_id)
 
 

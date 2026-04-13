@@ -30,6 +30,8 @@ ML_INIT_TIMEOUT_SECONDS = 12
 ML_RECV_TIMEOUT_SECONDS = 65
 SUMMARY_TIMEOUT_SECONDS = 60
 TEST_TIMEOUT_SECONDS = 180
+POSTPROCESS_STAGE_TOTAL_TIMEOUT_SECONDS = 120
+POSTPROCESS_MAX_ATTEMPTS = 3
 
 TASK_LOCK = asyncio.Lock()
 TASKS: dict[str, dict[str, Any]] = {}
@@ -225,8 +227,14 @@ async def check_test_available() -> bool:
 
 async def generate_summary(transcript: list[dict[str, Any]]) -> tuple[list[dict[str, Any]] | None, str | None]:
     try:
+        started_at = asyncio.get_running_loop().time()
+
         async with httpx.AsyncClient() as client:
-            health_resp = await client.get(build_summary_url("health"), timeout=10.0)
+            remaining = POSTPROCESS_STAGE_TOTAL_TIMEOUT_SECONDS - (asyncio.get_running_loop().time() - started_at)
+            if remaining <= 0:
+                return None, "Summary generation timeout"
+
+            health_resp = await client.get(build_summary_url("health"), timeout=min(10.0, remaining))
             health_resp.raise_for_status()
             if not health_resp.json().get("llm_available"):
                 return None, "LLM service unavailable"
@@ -238,16 +246,19 @@ async def generate_summary(transcript: list[dict[str, Any]]) -> tuple[list[dict[
                 ]
             }
             resp = None
-            for attempt in range(1, 3):
+            for attempt in range(1, POSTPROCESS_MAX_ATTEMPTS + 1):
+                remaining = POSTPROCESS_STAGE_TOTAL_TIMEOUT_SECONDS - (asyncio.get_running_loop().time() - started_at)
+                if remaining <= 0:
+                    return None, "Summary generation timeout"
                 resp = await client.post(
                     build_summary_url("summarize"),
                     json=payload,
-                    timeout=SUMMARY_TIMEOUT_SECONDS,
+                    timeout=min(SUMMARY_TIMEOUT_SECONDS, remaining),
                 )
                 if resp.status_code not in {502, 503, 504}:
                     break
                 logger.warning("Summary API transient error (attempt %s): %s", attempt, resp.status_code)
-                if attempt < 2:
+                if attempt < POSTPROCESS_MAX_ATTEMPTS:
                     await asyncio.sleep(1.2 * attempt)
             if resp.status_code >= 400:
                 message = resp.text
@@ -255,6 +266,8 @@ async def generate_summary(transcript: list[dict[str, Any]]) -> tuple[list[dict[
                     message = resp.json().get("message", message)
                 except Exception:
                     pass
+                if resp.status_code in {502, 503, 504}:
+                    return None, "Summary generation timeout"
                 return None, str(message)
 
             body = resp.json()
@@ -273,8 +286,14 @@ async def generate_summary(transcript: list[dict[str, Any]]) -> tuple[list[dict[
 
 async def generate_test(transcript: list[dict[str, Any]]) -> tuple[list[dict[str, Any]] | None, str | None]:
     try:
+        started_at = asyncio.get_running_loop().time()
+
         async with httpx.AsyncClient() as client:
-            health_resp = await client.get(build_test_url("health"), timeout=10.0)
+            remaining = POSTPROCESS_STAGE_TOTAL_TIMEOUT_SECONDS - (asyncio.get_running_loop().time() - started_at)
+            if remaining <= 0:
+                return None, "Test generation timeout"
+
+            health_resp = await client.get(build_test_url("health"), timeout=min(10.0, remaining))
             health_resp.raise_for_status()
             if not health_resp.json().get("llm_available"):
                 return None, "Test generation unavailable"
@@ -287,16 +306,19 @@ async def generate_test(transcript: list[dict[str, Any]]) -> tuple[list[dict[str
                 "num_questions": 10,
             }
             resp = None
-            for attempt in range(1, 4):
+            for attempt in range(1, POSTPROCESS_MAX_ATTEMPTS + 1):
+                remaining = POSTPROCESS_STAGE_TOTAL_TIMEOUT_SECONDS - (asyncio.get_running_loop().time() - started_at)
+                if remaining <= 0:
+                    return None, "Test generation timeout"
                 resp = await client.post(
                     build_test_url("generate"),
                     json=payload,
-                    timeout=TEST_TIMEOUT_SECONDS,
+                    timeout=min(TEST_TIMEOUT_SECONDS, remaining),
                 )
                 if resp.status_code not in {502, 503, 504}:
                     break
                 logger.warning("Test API transient error (attempt %s): %s", attempt, resp.status_code)
-                if attempt < 3:
+                if attempt < POSTPROCESS_MAX_ATTEMPTS:
                     await asyncio.sleep(1.5 * attempt)
             if resp.status_code >= 400:
                 message = resp.text
@@ -305,7 +327,7 @@ async def generate_test(transcript: list[dict[str, Any]]) -> tuple[list[dict[str
                 except Exception:
                     pass
                 if resp.status_code in {502, 503, 504}:
-                    return None, "Test generation unavailable"
+                    return None, "Test generation timeout"
                 return None, str(message)
 
             body = resp.json()

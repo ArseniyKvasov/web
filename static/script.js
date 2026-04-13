@@ -368,6 +368,9 @@ function applyTaskUpdate(task) {
     if (task.error) {
       showToast(task.error, 'error');
     }
+    if (!summaryReady && task.errors && task.errors.summary) {
+      summaryContainer.innerHTML = `<div class="status-message">Ошибка: ${escapeHtml(task.errors.summary)}</div>`;
+    }
     if (!quizReady && task.errors && task.errors.test) {
       quizContainer.innerHTML = `<div class="status-message">Ошибка: ${escapeHtml(task.errors.test)}</div>`;
     }

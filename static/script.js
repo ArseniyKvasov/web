@@ -18,9 +18,14 @@ let shownTaskErrorKeys = new Set();
 
 let streamSocket = null;
 let taskSocket = null;
+let taskSocketReconnectTimer = null;
+let taskSocketReconnectAttempts = 0;
+let currentTaskStatus = null;
+let taskSocketManualClose = false;
 
 const CHUNK_SIZE = 64 * 1024;
 const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024;
+const TASK_WS_MAX_RECONNECT_ATTEMPTS = 6;
 
 const dropZone = document.getElementById('dropZone');
 const fileInput = document.getElementById('fileInput');
@@ -58,6 +63,18 @@ function showToast(message, type = 'error') {
   }, 3600);
 }
 
+function toUserFacingStageError(section, rawError) {
+  const text = String(rawError || '').toLowerCase();
+  if (text.includes('timeout')) {
+    if (section === 'summary') return 'Не удалось получить конспект: превышено время ожидания';
+    if (section === 'test') return 'Не удалось получить тест: превышено время ожидания';
+    return 'Превышено время ожидания ответа сервиса';
+  }
+  if (section === 'summary') return 'Не удалось сгенерировать конспект. Попробуйте позже';
+  if (section === 'test') return 'Не удалось сгенерировать тест. Попробуйте позже';
+  return 'Произошла ошибка. Попробуйте ещё раз';
+}
+
 function mapStreamError(codeOrMessage) {
   const code = String(codeOrMessage || '').trim();
   const mapped = {
@@ -67,6 +84,25 @@ function mapStreamError(codeOrMessage) {
     INVALID_INIT: 'Ошибка инициализации транскрибации'
   };
   return mapped[code] || code || 'Ошибка транскрибации';
+}
+
+function scheduleTaskSocketReconnect() {
+  if (!taskId) return;
+  if (taskSocketManualClose) return;
+  if (currentTaskStatus === 'done' || currentTaskStatus === 'failed') return;
+  if (taskSocketReconnectAttempts >= TASK_WS_MAX_RECONNECT_ATTEMPTS) {
+    showToast('Потеряно соединение с сервером обновлений', 'error');
+    return;
+  }
+  if (taskSocketReconnectTimer) return;
+
+  const attempt = taskSocketReconnectAttempts + 1;
+  const delay = Math.min(6000, 600 * Math.pow(2, taskSocketReconnectAttempts));
+  taskSocketReconnectTimer = setTimeout(() => {
+    taskSocketReconnectTimer = null;
+    taskSocketReconnectAttempts = attempt;
+    connectTaskSocket(taskId);
+  }, delay);
 }
 
 function wsUrl(path) {
@@ -316,6 +352,7 @@ function setFailedState(message) {
 
 function applyTaskUpdate(task) {
   if (!task || !task.id) return;
+  currentTaskStatus = task.status || null;
 
   if (Array.isArray(task.transcript) && task.transcript.length) {
     currentTranscriptLines = task.transcript;
@@ -355,10 +392,11 @@ function applyTaskUpdate(task) {
     };
     for (const [section, err] of Object.entries(task.errors)) {
       if (!err) continue;
+      console.error(`Task stage error (${section}):`, err);
       const key = `${task.id}:${section}:${String(err)}`;
       if (shownTaskErrorKeys.has(key)) continue;
       shownTaskErrorKeys.add(key);
-      showToast(`${titles[section] || section}: ${err}`, 'error');
+      showToast(toUserFacingStageError(section, err), 'error');
     }
   }
 
@@ -366,13 +404,14 @@ function applyTaskUpdate(task) {
     isGenerating = false;
     updateGenerateButtonIdle();
     if (task.error) {
-      showToast(task.error, 'error');
+      console.error('Task failed:', task.error);
+      showToast('Не удалось завершить обработку файла', 'error');
     }
     if (!summaryReady && task.errors && task.errors.summary) {
-      summaryContainer.innerHTML = `<div class="status-message">Ошибка: ${escapeHtml(task.errors.summary)}</div>`;
+      summaryContainer.innerHTML = `<div class="status-message">Ошибка: ${escapeHtml(toUserFacingStageError('summary', task.errors.summary))}</div>`;
     }
     if (!quizReady && task.errors && task.errors.test) {
-      quizContainer.innerHTML = `<div class="status-message">Ошибка: ${escapeHtml(task.errors.test)}</div>`;
+      quizContainer.innerHTML = `<div class="status-message">Ошибка: ${escapeHtml(toUserFacingStageError('test', task.errors.test))}</div>`;
     }
   }
 
@@ -384,16 +423,28 @@ function applyTaskUpdate(task) {
 
 function connectTaskSocket(newTaskId) {
   if (taskSocket) {
+    taskSocketManualClose = true;
     taskSocket.close();
     taskSocket = null;
   }
+  taskSocketManualClose = false;
 
   taskSocket = new WebSocket(wsUrl(`/ws/tasks/${encodeURIComponent(newTaskId)}`));
+  const expectedTaskId = newTaskId;
+
+  taskSocket.onopen = () => {
+    taskSocketReconnectAttempts = 0;
+    if (taskSocketReconnectTimer) {
+      clearTimeout(taskSocketReconnectTimer);
+      taskSocketReconnectTimer = null;
+    }
+  };
 
   taskSocket.onmessage = (event) => {
     try {
       const payload = JSON.parse(event.data);
       if (payload.type === 'error') {
+        console.error('Task websocket error payload:', payload);
         setFailedState('Ошибка подписки на задачу');
         return;
       }
@@ -405,6 +456,9 @@ function connectTaskSocket(newTaskId) {
 
   taskSocket.onclose = () => {
     taskSocket = null;
+    if (taskId === expectedTaskId) {
+      scheduleTaskSocketReconnect();
+    }
   };
 }
 
@@ -447,7 +501,8 @@ async function uploadFile(file) {
     generateBtn.disabled = false;
   } catch (error) {
     uploadStatusDiv.innerHTML = `<div class="status-message">Ошибка загрузки: ${escapeHtml(error.message || 'unknown')}</div>`;
-    showToast(`Ошибка загрузки: ${error.message || 'unknown'}`, 'error');
+    console.error('Upload failed:', error);
+    showToast('Не удалось загрузить файл', 'error');
     selectedFile = null;
     taskId = null;
     fileUploaded = false;
@@ -492,6 +547,12 @@ function resetContentState() {
   isEditMode = false;
   firstTranscriptReceived = false;
   shownTaskErrorKeys = new Set();
+  currentTaskStatus = null;
+  taskSocketReconnectAttempts = 0;
+  if (taskSocketReconnectTimer) {
+    clearTimeout(taskSocketReconnectTimer);
+    taskSocketReconnectTimer = null;
+  }
 
   summaryReady = false;
   quizReady = false;
@@ -555,6 +616,7 @@ function startGeneration() {
         return;
       }
       if (payload.type === 'error') {
+        console.error('Stream websocket error payload:', payload);
         setFailedState(mapStreamError(payload.code || payload.message || 'Ошибка стриминга'));
       }
     } catch (e) {
@@ -563,6 +625,7 @@ function startGeneration() {
   };
 
   streamSocket.onerror = () => {
+    console.error('Stream websocket transport error');
     setFailedState('Ошибка соединения с сервером');
   };
 
@@ -579,13 +642,19 @@ function resetUpload() {
     streamSocket = null;
   }
   if (taskSocket) {
+    taskSocketManualClose = true;
     taskSocket.close();
     taskSocket = null;
+  }
+  if (taskSocketReconnectTimer) {
+    clearTimeout(taskSocketReconnectTimer);
+    taskSocketReconnectTimer = null;
   }
 
   selectedFile = null;
   fileUploaded = false;
   taskId = null;
+  currentTaskStatus = null;
   isGenerating = false;
   uploadStatusDiv.innerHTML = '';
 

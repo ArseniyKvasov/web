@@ -224,11 +224,18 @@ async def generate_summary(transcript: list[dict[str, Any]]) -> tuple[list[dict[
                     for item in transcript
                 ]
             }
-            resp = await client.post(
-                build_summary_url("summarize"),
-                json=payload,
-                timeout=SUMMARY_TIMEOUT_SECONDS,
-            )
+            resp = None
+            for attempt in range(1, 3):
+                resp = await client.post(
+                    build_summary_url("summarize"),
+                    json=payload,
+                    timeout=SUMMARY_TIMEOUT_SECONDS,
+                )
+                if resp.status_code not in {502, 503, 504}:
+                    break
+                logger.warning("Summary API transient error (attempt %s): %s", attempt, resp.status_code)
+                if attempt < 2:
+                    await asyncio.sleep(1.2 * attempt)
             if resp.status_code >= 400:
                 message = resp.text
                 try:
@@ -266,17 +273,26 @@ async def generate_test(transcript: list[dict[str, Any]]) -> tuple[list[dict[str
                 ],
                 "num_questions": 10,
             }
-            resp = await client.post(
-                build_test_url("generate"),
-                json=payload,
-                timeout=TEST_TIMEOUT_SECONDS,
-            )
+            resp = None
+            for attempt in range(1, 4):
+                resp = await client.post(
+                    build_test_url("generate"),
+                    json=payload,
+                    timeout=TEST_TIMEOUT_SECONDS,
+                )
+                if resp.status_code not in {502, 503, 504}:
+                    break
+                logger.warning("Test API transient error (attempt %s): %s", attempt, resp.status_code)
+                if attempt < 3:
+                    await asyncio.sleep(1.5 * attempt)
             if resp.status_code >= 400:
                 message = resp.text
                 try:
                     message = resp.json().get("message", message)
                 except Exception:
                     pass
+                if resp.status_code in {502, 503, 504}:
+                    return None, "Test generation unavailable"
                 return None, str(message)
 
             body = resp.json()

@@ -566,3 +566,35 @@ body {
   animation: spin 0.6s linear infinite;
   display: inline-block;
 }
+
+.toast-root {
+  position: fixed;
+  right: 16px;
+  top: 16px;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: min(92vw, 380px);
+}
+
+.toast {
+  background: #0f172a;
+  color: #ffffff;
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 0.85rem;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.22);
+  opacity: 0;
+  transform: translateY(-8px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.toast-show {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.toast-error {
+  background: #b91c1c;
+}

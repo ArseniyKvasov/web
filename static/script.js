@@ -14,11 +14,13 @@ let firstTranscriptReceived = false;
 
 let currentQuizIndex = 0;
 let quizAnswers = [];
+let shownTaskErrorKeys = new Set();
 
 let streamSocket = null;
 let taskSocket = null;
 
 const CHUNK_SIZE = 64 * 1024;
+const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024;
 
 const dropZone = document.getElementById('dropZone');
 const fileInput = document.getElementById('fileInput');
@@ -31,6 +33,41 @@ const quizContainer = document.getElementById('quizContainer');
 const editSummaryBtn = document.getElementById('editSummaryBtn');
 const summaryTabBtn = document.getElementById('summaryTabBtn');
 const quizTabBtn = document.getElementById('quizTabBtn');
+
+function getToastRoot() {
+  let root = document.getElementById('toastRoot');
+  if (root) return root;
+  root = document.createElement('div');
+  root.id = 'toastRoot';
+  root.className = 'toast-root';
+  document.body.appendChild(root);
+  return root;
+}
+
+function showToast(message, type = 'error') {
+  if (!message) return;
+  const root = getToastRoot();
+  const toast = document.createElement('div');
+  toast.className = `toast toast-${type}`;
+  toast.textContent = message;
+  root.appendChild(toast);
+  requestAnimationFrame(() => toast.classList.add('toast-show'));
+  setTimeout(() => {
+    toast.classList.remove('toast-show');
+    setTimeout(() => toast.remove(), 220);
+  }, 3600);
+}
+
+function mapStreamError(codeOrMessage) {
+  const code = String(codeOrMessage || '').trim();
+  const mapped = {
+    ML_UNAVAILABLE: 'Транскрибатор недоступен',
+    ML_DISCONNECTED: 'Соединение с транскрибатором разорвано',
+    TIMEOUT: 'Таймаут транскрибации',
+    INVALID_INIT: 'Ошибка инициализации транскрибации'
+  };
+  return mapped[code] || code || 'Ошибка транскрибации';
+}
 
 function wsUrl(path) {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -262,10 +299,18 @@ function updateGenerateButtonIdle() {
 function setFailedState(message) {
   isGenerating = false;
   updateGenerateButtonIdle();
-  if (message) {
+  if (message && !summaryReady) {
     const html = `<div class="status-message">Ошибка: ${escapeHtml(message)}</div>`;
-    if (!summaryReady) summaryContainer.innerHTML = html;
-    if (!quizReady) quizContainer.innerHTML = html;
+    transcriptContainer.innerHTML = html;
+  }
+  if (message) {
+    showToast(message, 'error');
+    if (!quizReady) {
+      quizContainer.innerHTML = `<div class="status-message">Ошибка: ${escapeHtml(message)}</div>`;
+    }
+    if (!summaryReady) {
+      summaryContainer.innerHTML = `<div class="status-message">Ошибка: ${escapeHtml(message)}</div>`;
+    }
   }
 }
 
@@ -302,8 +347,30 @@ function applyTaskUpdate(task) {
     }
   }
 
+  if (task.errors && typeof task.errors === 'object') {
+    const titles = {
+      transcript: 'Транскрипт',
+      summary: 'Конспект',
+      test: 'Тест'
+    };
+    for (const [section, err] of Object.entries(task.errors)) {
+      if (!err) continue;
+      const key = `${task.id}:${section}:${String(err)}`;
+      if (shownTaskErrorKeys.has(key)) continue;
+      shownTaskErrorKeys.add(key);
+      showToast(`${titles[section] || section}: ${err}`, 'error');
+    }
+  }
+
   if (task.status === 'failed') {
-    setFailedState(task.error || 'Task failed');
+    isGenerating = false;
+    updateGenerateButtonIdle();
+    if (task.error) {
+      showToast(task.error, 'error');
+    }
+    if (!quizReady && task.errors && task.errors.test) {
+      quizContainer.innerHTML = `<div class="status-message">Ошибка: ${escapeHtml(task.errors.test)}</div>`;
+    }
   }
 
   if (task.status === 'done') {
@@ -324,7 +391,7 @@ function connectTaskSocket(newTaskId) {
     try {
       const payload = JSON.parse(event.data);
       if (payload.type === 'error') {
-        setFailedState(payload.code || 'Ошибка подписки на задачу');
+        setFailedState('Ошибка подписки на задачу');
         return;
       }
       applyTaskUpdate(payload);
@@ -339,6 +406,16 @@ function connectTaskSocket(newTaskId) {
 }
 
 async function uploadFile(file) {
+  if (!file) return;
+  if (file.size > MAX_FILE_SIZE_BYTES) {
+    showToast('Нельзя загрузить файл больше 50 МБ', 'error');
+    uploadStatusDiv.innerHTML = `<div class="status-message">Файл слишком большой</div>`;
+    selectedFile = null;
+    fileUploaded = false;
+    generateBtn.disabled = true;
+    return;
+  }
+
   selectedFile = file;
   fileUploaded = false;
   generateBtn.disabled = true;
@@ -367,6 +444,7 @@ async function uploadFile(file) {
     generateBtn.disabled = false;
   } catch (error) {
     uploadStatusDiv.innerHTML = `<div class="status-message">Ошибка загрузки: ${escapeHtml(error.message || 'unknown')}</div>`;
+    showToast(`Ошибка загрузки: ${error.message || 'unknown'}`, 'error');
     selectedFile = null;
     taskId = null;
     fileUploaded = false;
@@ -410,6 +488,7 @@ function resetContentState() {
   quizAnswers = [];
   isEditMode = false;
   firstTranscriptReceived = false;
+  shownTaskErrorKeys = new Set();
 
   summaryReady = false;
   quizReady = false;
@@ -473,7 +552,7 @@ function startGeneration() {
         return;
       }
       if (payload.type === 'error') {
-        setFailedState(payload.code || 'Ошибка стриминга');
+        setFailedState(mapStreamError(payload.code || payload.message || 'Ошибка стриминга'));
       }
     } catch (e) {
       console.warn('Bad stream message', e);

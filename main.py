@@ -76,6 +76,11 @@ def create_task() -> dict[str, Any]:
         "summary": [],
         "test": [],
         "error": None,
+        "errors": {
+            "transcript": None,
+            "summary": None,
+            "test": None,
+        },
     }
     TASKS[task_id] = task
     return task
@@ -88,6 +93,11 @@ def reset_task(task_id: str) -> None:
     task["summary"] = []
     task["test"] = []
     task["error"] = None
+    task["errors"] = {
+        "transcript": None,
+        "summary": None,
+        "test": None,
+    }
 
 
 def snapshot_task(task_id: str) -> dict[str, Any]:
@@ -99,6 +109,7 @@ def snapshot_task(task_id: str) -> dict[str, Any]:
         "summary": list(task["summary"]),
         "test": list(task["test"]),
         "error": task["error"],
+        "errors": dict(task.get("errors", {})),
     }
 
 
@@ -128,6 +139,8 @@ async def fail_task(task_id: str, error_message: str) -> None:
             return
         TASKS[task_id]["status"] = "failed"
         TASKS[task_id]["error"] = error_message
+        TASKS[task_id].setdefault("errors", {})
+        TASKS[task_id]["errors"]["transcript"] = error_message
     await push_task_update(task_id)
 
 
@@ -310,26 +323,37 @@ async def generate_test(transcript: list[dict[str, Any]]) -> tuple[list[dict[str
 
 
 async def run_postprocessing(task_id: str, transcript: list[dict[str, Any]]) -> None:
-    summary_result, test_result = await asyncio.gather(
-        generate_summary(transcript),
-        generate_test(transcript),
-    )
+    pending: dict[asyncio.Task[tuple[list[dict[str, Any]] | None, str | None]], str] = {
+        asyncio.create_task(generate_summary(transcript)): "summary",
+        asyncio.create_task(generate_test(transcript)): "test",
+    }
 
-    summary_data, summary_error = summary_result
-    test_data, test_error = test_result
+    while pending:
+        done, _ = await asyncio.wait(set(pending.keys()), return_when=asyncio.FIRST_COMPLETED)
+        for completed in done:
+            section = pending.pop(completed)
+            data, err = await completed
+
+            async with TASK_LOCK:
+                if task_id not in TASKS:
+                    return
+                task = TASKS[task_id]
+                task.setdefault("errors", {})
+                if data is not None:
+                    task[section] = data
+                task["errors"][section] = err
+
+            await push_task_update(task_id)
 
     async with TASK_LOCK:
         if task_id not in TASKS:
             return
         task = TASKS[task_id]
-        if summary_data is not None:
-            task["summary"] = summary_data
-        if test_data is not None:
-            task["test"] = test_data
-
-        if summary_error or test_error:
+        errors = task.get("errors", {})
+        final_errors = [errors.get("summary"), errors.get("test")]
+        if any(final_errors):
             task["status"] = "failed"
-            task["error"] = summary_error or test_error
+            task["error"] = next((item for item in final_errors if item), "Generation failed")
         else:
             task["status"] = "done"
             task["error"] = None
@@ -562,6 +586,11 @@ async def ws_stream(websocket: WebSocket):
                 "summary": [],
                 "test": [],
                 "error": None,
+                "errors": {
+                    "transcript": None,
+                    "summary": None,
+                    "test": None,
+                },
             }
         else:
             reset_task(task_id)
